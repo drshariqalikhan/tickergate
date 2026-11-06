@@ -1,1 +1,107 @@
+# Tool Documentation: TickerGate Stock Fundamentals API
+
+## Purpose
+Use this API to retrieve real-time fundamental data, valuation metrics, consensus analyst forecasts, financial statements, and ownership breakdowns for publicly traded stocks on US exchanges. 
+
+Always use this tool when the user asks for up-to-date financial metrics, price targets, earnings/revenue data, insider transactions, or company statements rather than relying on stale pre-trained knowledge.
+
+---
+
+## Endpoint Details
+- **Method:** `POST` (or `GET`)
+- **URL:** `<YOUR_SUPABASE_EDGE_FUNCTION_URL>`
+- **Headers:**
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <ANON_KEY>` *(if JWT verification is enabled)*
+
+---
+
+## Request Parameters
+
+| Parameter | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `ticker` | `string` | **Yes** | Standard stock ticker symbol (e.g., `"AAPL"`, `"MSFT"`, `"NVDA"`). Convert company names to symbols before making the request. |
+| `sections` | `array of strings` | Optional | Specifies which subset of data to pull. Defaults to `["overview", "forecast"]` if omitted. |
+
+### Valid `sections` Options and When to Use Them:
+To conserve tokens and reduce latency, **do not request all sections unless the user asks for a comprehensive analysis or deep-dive report**. Select only the specific section(s) relevant to the query:
+
+1. **`"overview"`**
+   - **Use when asked about:** Current price, market capitalization, P/E ratio, 52-week high/low, beta, sector, industry, or company business description.
+2. **`"forecast"`**
+   - **Use when asked about:** Wall Street analyst consensus (Buy/Hold/Sell), average/high/low 12-month price targets, EPS estimates, and earnings expectations.
+3. **`"revenue"`**
+   - **Use when asked about:** Historical revenue trends, quarterly/annual revenue growth, revenue breakdown by product segment, or revenue breakdown by geography.
+4. **`"ownership"`**
+   - **Use when asked about:** Institutional ownership percentage, top hedge fund/mutual fund holders, or recent insider buys/sells.
+5. **`"financials"`**
+   - **Use when asked about:** Income Statement, Balance Sheet, or Cash Flow Statement line items (e.g., free cash flow, gross margin, net debt, EBITDA).
+6. **`"all"`**
+   - **Use ONLY when:** The user requests a complete stock breakdown, initiation report, or full fundamental evaluation.
+
+---
+
+## Example Requests
+
+### Example 1: User asks *"What is Apple's price target and consensus?"*
+```json
+{
+  "ticker": "AAPL",
+  "sections": ["forecast"]
+}
+
+Response Schema & Structure
+The API returns a JSON object with the following top-level schema:
+
+{
+  "symbol": "AAPL",
+  "source": "tickergate",
+  "timestamp": "2026-11-06T08:30:00.000Z",
+  "sections": {
+    "overview": { ... },
+    "forecast": {
+      "analystRatings": {
+        "consensus": "Buy",
+        "targetHigh": 250.0,
+        "targetLow": 160.0,
+        "targetAverage": 205.5,
+        "numberOfAnalysts": 38
+      },
+      "epsEstimates": [ ... ]
+    },
+    "revenue": { ... },
+    "ownership": { ... },
+    "financials": { ... }
+  }
+}
+
+
+LLM Execution Instructions & Behavioral Rules
+Resolve Tickers First: If the user provides a company name (e.g., "Tesla", "Google", "Microsoft"), identify the correct stock symbol (TSLA, GOOGL, MSFT) before sending the request.
+Minimize Section Requests: Select only the minimum required sections. For example, if asked about insider trades, call only ["ownership"].
+Handle Missing Data Gracefully: If a field is null, missing, or returns {"error": ...}, state to the user that specific metric is currently unavailable on TickerGate. Do not fabricate or hallucinate figures.
+Currency & Units: Monetary amounts are in USD unless stated otherwise in the profile. Large financial statements figures (such as Revenue or Net Income) are usually reported in exact values or thousands—check the field context before citing figures in millions or billions.
+
+---
+
+### How to Use This in Your Python Ollama Script
+
+You can plug this directly into your system prompt so Ollama knows exactly how to formulate the parameters:
+
+```python
+SYSTEM_PROMPT = """You are an expert Wall Street financial analyst assistant. 
+You have access to a live API tool called `fetch_stock_data`.
+
+Follow these rules when calling the tool:
+1. Always map company names to stock ticker symbols (e.g., "Apple" -> "AAPL").
+2. Only request the sections necessary to answer the question to minimize token usage:
+   - "overview": For price, market cap, valuation ratios (P/E), company profile.
+   - "forecast": For analyst ratings, price targets, EPS estimates.
+   - "revenue": For sales growth, product/segment breakdown.
+   - "ownership": For insider buying/selling, top institutional holders.
+   - "financials": For balance sheet, income statement, cash flow statements.
+   - "all": Only for full comprehensive stock reports.
+3. If data is missing in the response, clearly mention it to the user. Never invent financial data.
+"""
+
 
