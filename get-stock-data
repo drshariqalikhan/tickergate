@@ -1,0 +1,136 @@
+// supabase/functions/get-stock-data/index.ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Content-Type": "application/json",
+};
+
+const ENDPOINTS: Record<string, string> = {
+  overview: "",
+  forecast: "/stock-forecast",
+  revenue: "/revenue",
+  ownership: "/ownership",
+  financials: "/financials",
+};
+
+/**
+ * Strips raw HTML, null blobs, and deep component tree metadata
+ * to keep tokens concise for Ollama.
+ */
+function sanitizeForLLM(data: any): any {
+  if (data === null || data === undefined) return undefined;
+  if (Array.isArray(data)) {
+    // If it's a huge time-series, take only the most recent entries
+    if (data.length > 12) {
+      return data.slice(-12).map(sanitizeForLLM);
+    }
+    return data.map(sanitizeForLLM);
+  }
+  if (typeof data === "object") {
+    const cleaned: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data)) {
+      // Exclude Next.js internal props and noisy keys
+      if (
+        key.startsWith("__") ||
+        key === "page" ||
+        key === "dehydratedState" ||
+        key === "apolloState"
+      ) {
+        continue;
+      }
+      const sanitized = sanitizeForLLM(value);
+      if (sanitized !== undefined) {
+        cleaned[key] = sanitized;
+      }
+    }
+    return cleaned;
+  }
+  return data;
+}
+
+serve(async (req: Request) => {
+  // Handle CORS Preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    let ticker = "AAPL";
+    let requestedSections: string[] = ["overview", "forecast"];
+
+    // Support both GET query params and POST body
+    if (req.method === "GET") {
+      const url = new URL(req.url);
+      ticker = url.searchParams.get("ticker") || "AAPL";
+      const sectionsParam = url.searchParams.get("sections");
+      if (sectionsParam) {
+        requestedSections = sectionsParam.split(",").map((s) => s.trim().toLowerCase());
+      }
+    } else if (req.method === "POST") {
+      const body = await req.json();
+      if (body.ticker) ticker = body.ticker;
+      if (Array.isArray(body.sections) && body.sections.length > 0) {
+        requestedSections = body.sections.map((s: string) => s.toLowerCase());
+      }
+    }
+
+    ticker = ticker.trim().toLowerCase();
+
+    // Filter requested sections
+    const targetEntries = Object.entries(ENDPOINTS).filter(([section]) =>
+      requestedSections.includes(section) || requestedSections.includes("all")
+    );
+
+    const fetchSection = async (section: string, path: string) => {
+      const targetUrl = `https://www.tickergate.com/stocks/${ticker}${path}`;
+      try {
+        const res = await fetch(targetUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html",
+          },
+        });
+
+        if (!res.ok) {
+          return [section, { error: `HTTP status ${res.status}` }];
+        }
+
+        const html = await res.text();
+        const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
+
+        if (match && match[1]) {
+          const parsed = JSON.parse(match[1]);
+          const pageProps = parsed?.props?.pageProps || {};
+          return [section, sanitizeForLLM(pageProps)];
+        }
+
+        return [section, { error: "No structured data found on page" }];
+      } catch (err: any) {
+        return [section, { error: err.message }];
+      }
+    };
+
+    const tasks = targetEntries.map(([sec, path]) => fetchSection(sec, path));
+    const sectionResults = Object.fromEntries(await Promise.all(tasks));
+
+    const finalResponse = {
+      symbol: ticker.toUpperCase(),
+      source: "tickergate",
+      timestamp: new Date().toISOString(),
+      sections: sectionResults,
+    };
+
+    return new Response(JSON.stringify(finalResponse), {
+      status: 200,
+      headers: corsHeaders,
+    });
+  } catch (error: any) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: corsHeaders,
+    });
+  }
+});
